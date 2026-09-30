@@ -1,0 +1,11 @@
+{
+  "name": "ratelimit-lab",
+  "version": "0.1.0",
+  "description": "Five rate limiting algorithms, an HTTP middleware that speaks the IETF RateLimit headers, and a simulator that runs them side by side.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test"
+  }
+}
