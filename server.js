@@ -5,19 +5,16 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
-import { GCRA } from "./src/limiters.js";
-import { createRateLimiter } from "./src/middleware.js";
+import { createPingLimiter } from "./src/ping.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT) || 8787;
 const types = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" };
-const publicFiles = new Set(["/index.html", "/src/limiters.js", "/src/sim.js", "/src/style.css"]);
+const publicFiles = new Set([
+  "/index.html", "/src/limiters.js", "/src/middleware.js", "/src/ping.js", "/src/sim.js", "/src/style.css",
+]);
 
-const limit = createRateLimiter({
-  limiter: new GCRA({ limit: 10, periodMs: 10_000 }),
-  windowMs: 10_000,
-  policy: "ping",
-});
+const limit = createPingLimiter();
 
 export const server = createServer(async (req, res) => {
   const { pathname } = new URL(req.url, "http://localhost");

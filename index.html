@@ -45,9 +45,10 @@
 
     <section class="panel api">
       <div>
-        <h2>Hit the real API</h2>
+        <h2>Hit the API</h2>
         <p>Sends 12 requests to <code>/api/ping</code> (GCRA, 10 per 10s) and prints the
-          <code>RateLimit</code> headers the middleware returns. Needs <code>npm start</code>.</p>
+          <code>RateLimit</code> headers the middleware returns. With no server behind the page,
+          the same middleware runs in this tab instead.</p>
         <button type="button" id="fire">Send 12 requests</button>
       </div>
       <pre id="log" aria-live="polite">Waiting.</pre>
@@ -56,6 +57,7 @@
 
   <script type="module">
     import { PATTERNS, simulate } from "./src/sim.js";
+    import { callInProcess, createPingLimiter } from "./src/ping.js";
 
     const form = document.getElementById("controls");
     const rows = document.getElementById("rows");
@@ -129,23 +131,34 @@
     render();
 
     const log = document.getElementById("log");
+    const tabLimit = createPingLimiter();
+    const line = (i, status, headers) =>
+      `${String(i).padStart(2)}  ${status}  ${headers.ratelimit ?? "-"}${headers["retry-after"] ? `  retry-after=${headers["retry-after"]}` : ""}`;
+
+    // A static host answers /api/ping with a 404 or its HTML fallback; only a
+    // response carrying RateLimit came from the middleware.
+    async function viaNetwork() {
+      try {
+        const res = await fetch("api/ping", { cache: "no-store" });
+        if (!res.headers.get("ratelimit")) return null;
+        return { status: res.status, headers: { ratelimit: res.headers.get("ratelimit"), "retry-after": res.headers.get("retry-after") } };
+      } catch {
+        return null;
+      }
+    }
+
     document.getElementById("fire").addEventListener("click", async (event) => {
       const button = event.currentTarget;
       button.disabled = true;
-      const lines = [];
-      try {
-        for (let i = 1; i <= 12; i += 1) {
-          const res = await fetch("api/ping", { cache: "no-store" });
-          if (res.status === 404) throw new Error("no api");
-          const retry = res.headers.get("retry-after");
-          lines.push(`${String(i).padStart(2)}  ${res.status}  ${res.headers.get("ratelimit") ?? "-"}${retry ? `  retry-after=${retry}` : ""}`);
-          log.textContent = lines.join("\n");
-        }
-      } catch {
-        log.textContent = "No API here. Run `npm start` and open http://localhost:8787.";
-      } finally {
-        button.disabled = false;
+      const first = await viaNetwork();
+      const lines = [first ? "server  /api/ping" : "in tab  same middleware, no server here"];
+      for (let i = 1; i <= 12; i += 1) {
+        const r = i === 1 && first ? first : first ? await viaNetwork() : callInProcess(tabLimit);
+        if (!r) break;
+        lines.push(line(i, r.status, r.headers));
+        log.textContent = lines.join("\n");
       }
+      button.disabled = false;
     });
   </script>
 </body>
