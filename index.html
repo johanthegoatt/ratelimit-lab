@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rate Limit Lab</title>
+  <meta name="description" content="Five rate limiting algorithms replaying the same traffic side by side.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+  <main>
+    <header>
+      <p class="eyebrow">ratelimit-lab</p>
+      <h1>Same traffic, five limiters</h1>
+      <p class="lede">Every row replays one client's requests through a different algorithm set to the
+        same quota. <strong>Worst window</strong> is the most requests any backend saw inside one
+        real window, measured exactly. Anything above the limit leaked through.</p>
+    </header>
+
+    <form id="controls" class="panel" aria-label="Simulation settings">
+      <label>Traffic
+        <select name="pattern"></select>
+      </label>
+      <label>Limit <output name="limitOut">10</output>
+        <input type="range" name="limit" min="2" max="40" value="10">
+      </label>
+      <label>Window <output name="windowOut">1s</output>
+        <input type="range" name="window" min="250" max="5000" step="250" value="1000">
+      </label>
+      <label>Duration <output name="durationOut">6 windows</output>
+        <input type="range" name="duration" min="2" max="16" value="6">
+      </label>
+    </form>
+
+    <section id="rows" aria-live="polite"></section>
+
+    <p class="legend">
+      <span class="swatch ok"></span> allowed
+      <span class="swatch no"></span> denied
+      <span class="swatch edge"></span> window boundary
+    </p>
+
+    <section class="panel api">
+      <div>
+        <h2>Hit the real API</h2>
+        <p>Sends 12 requests to <code>/api/ping</code> (GCRA, 10 per 10s) and prints the
+          <code>RateLimit</code> headers the middleware returns. Needs <code>npm start</code>.</p>
+        <button type="button" id="fire">Send 12 requests</button>
+      </div>
+      <pre id="log" aria-live="polite">Waiting.</pre>
+    </section>
+  </main>
+
+  <script type="module">
+    import { PATTERNS, simulate } from "./src/sim.js";
+
+    const form = document.getElementById("controls");
+    const rows = document.getElementById("rows");
+    const select = form.elements.pattern;
+    for (const [value, { label }] of Object.entries(PATTERNS)) {
+      select.add(new Option(label, value, value === "boundary", value === "boundary"));
+    }
+
+    const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+    function draw(canvas, result, settings) {
+      const dpr = window.devicePixelRatio || 1;
+      const width = canvas.clientWidth;
+      const height = canvas.clientHeight;
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      const ctx = canvas.getContext("2d");
+      ctx.scale(dpr, dpr);
+
+      const span = settings.durationMs;
+      ctx.strokeStyle = css("--edge");
+      ctx.lineWidth = 1;
+      for (let t = 0; t <= span; t += settings.windowMs) {
+        const x = Math.round((t / span) * (width - 1)) + 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+      }
+
+      const ok = css("--ok");
+      const no = css("--no");
+      for (const e of result.events) {
+        const x = (e.t / span) * (width - 1);
+        ctx.fillStyle = e.allowed ? ok : no;
+        ctx.fillRect(x, e.allowed ? 4 : height / 2 + 2, 1.5, height / 2 - 6);
+      }
+    }
+
+    function render() {
+      const limit = Number(form.elements.limit.value);
+      const windowMs = Number(form.elements.window.value);
+      const durationMs = windowMs * Number(form.elements.duration.value);
+      form.elements.limitOut.value = limit;
+      form.elements.windowOut.value = `${windowMs / 1000}s`;
+      form.elements.durationOut.value = `${form.elements.duration.value} windows`;
+
+      const settings = { limit, windowMs, durationMs, pattern: select.value };
+      const results = simulate(settings);
+
+      rows.replaceChildren(...results.map((r) => {
+        const row = document.createElement("article");
+        row.className = "panel row";
+        const leaked = r.worst > limit;
+        row.innerHTML = `
+          <h3>${r.name}</h3>
+          <canvas role="img" aria-label="${r.allowed} allowed, ${r.denied} denied over time"></canvas>
+          <dl>
+            <div><dt>allowed</dt><dd>${r.allowed}</dd></div>
+            <div><dt>denied</dt><dd>${r.denied}</dd></div>
+            <div class="${leaked ? "bad" : ""}"><dt>worst window</dt><dd>${r.worst} / ${limit}</dd></div>
+            <div><dt>state per key</dt><dd>${r.peakState} ${r.peakState === 1 ? "number" : "numbers"}</dd></div>
+          </dl>`;
+        requestAnimationFrame(() => draw(row.querySelector("canvas"), r, settings));
+        return row;
+      }));
+    }
+
+    form.addEventListener("input", render);
+    window.addEventListener("resize", render);
+    render();
+
+    const log = document.getElementById("log");
+    document.getElementById("fire").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      const lines = [];
+      try {
+        for (let i = 1; i <= 12; i += 1) {
+          const res = await fetch("api/ping", { cache: "no-store" });
+          if (res.status === 404) throw new Error("no api");
+          const retry = res.headers.get("retry-after");
+          lines.push(`${String(i).padStart(2)}  ${res.status}  ${res.headers.get("ratelimit") ?? "-"}${retry ? `  retry-after=${retry}` : ""}`);
+          log.textContent = lines.join("\n");
+        }
+      } catch {
+        log.textContent = "No API here. Run `npm start` and open http://localhost:8787.";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
